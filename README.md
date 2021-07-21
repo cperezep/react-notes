@@ -2,19 +2,21 @@
 
 Normally an interactive application will need to hold state somewhere. In React, you use special functions called "hooks" to do this. Common built-in hooks include:
 
-- `React.useState`
-- `React.useEffect`
-- `React.useRef`
-- `React.useReducer`
-- `React.useCallback`
-- `React.useContext`
+- [`React.useState`](#useState)
+- [`React.useEffect`](#useEffect)
+- [`React.useRef`](#useRef)
+- [`React.useReducer`](#useReducer)
+- [`React.useCallback`](#useCallback)
+- [`React.useContext`](#useContext)
+- [`React.useLayoutEffect`](#useLayoutEffect)
+- [`React.useDebugValue`](#useDebugValue)
 
 Each of these is a special function that you can call inside your custom React component function to store data (like state) or perform actions (or side-effects).
 
 
 Each of the hooks has a unique API. Some return a value (like `React.useRef` and `React.useContext`), others return a pair of values (like `React.useState` and `React.useReducer`), and others return nothing at all (like `React.useEffect`).
 
-### React.useState
+### React.useState <a id="useState"></a>
 An example of a component that uses the `useState` hook and an onClick event handler to update that state:
 
 ```jsx
@@ -60,7 +62,7 @@ Creating a function is fast. Even if what the function does is computationally e
 
 This is called "lazy initialization." It's a performance optimization. You shouldn't have to use it a whole lot, but it can be useful in some situations, so it's good to know that it's a feature that exists and you can use it when needed. I would say I use this only 2% of the time. It's not really a feature I use often.
 
-### React.useEffect
+### React.useEffect <a id="useEffect"></a>
 `React.useEffect` is a built-in hook that allows you to run some custom code after React renders (and re-renders) your component to the DOM. It accepts a
 callback function which React will call after the DOM has been updated:
 
@@ -68,7 +70,7 @@ callback function which React will call after the DOM has been updated:
 React.useEffect(() => {
   // your side-effect code here.
   // this is where you can make HTTP requests or interact with browser APIs.
-  // This code always will be executed and depend on everything 
+  // This code always will be executed and depend on everything
 });
 ```
 
@@ -120,7 +122,7 @@ React.useEffect(() => {
 }, []);
 ```
 
-### React.useRef
+### React.useRef <a id="useRef"></a>
 `useRef` returns a mutable ref object whose `.current` property is initialized to the passed argument (initialValue). The returned object will persist for the full lifetime of the component.
 ```javascript
 function MyDiv() {
@@ -143,8 +145,8 @@ This works because `useRef()` creates a plain JavaScript object. The only differ
 
 Keep in mind that `useRef` doesn’t notify you when its content changes. Mutating the `.current` property doesn’t cause a re-render. If you want to run some code when React attaches or detaches a ref to a DOM node, you may want to use a callback ref instead.
 
-### React.useReducer
-Sometimes you want to separate the state logic from the components that make the state changes. In addition, if you have multiple elements of state that typically change together, then having an object that contains those elements of state can be quite helpful. This is where `useReducer` comes in really handy. `useReducer` is usually preferable to useState when you have complex state logic that involves multiple sub-values or when the next state depends on the previous one. 
+### React.useReducer <a id="useReducer"></a>
+Sometimes you want to separate the state logic from the components that make the state changes. In addition, if you have multiple elements of state that typically change together, then having an object that contains those elements of state can be quite helpful. This is where `useReducer` comes in really handy. `useReducer` is usually preferable to useState when you have complex state logic that involves multiple sub-values or when the next state depends on the previous one.
 
 Accepts a reducer of type `(state, action) => newState`, and returns the current state paired with a `dispatch` method. (If you’re familiar with Redux, you already know how this works.)
 
@@ -218,7 +220,7 @@ Here are two really helpful blog posts comparing `useState` and `useReducer`:
 - [Should I useState or useReducer?](https://kentcdodds.com/blog/should-i-usestate-or-usereducer)
 - [How to implement useState with useReducer](https://kentcdodds.com/blog/how-to-implement-usestate-with-usereducer)
 
-### React.useCallback
+### React.useCallback <a id="useCallback"></a>
 ```javascript
 React.useEffect(() => {
   window.localStorage.setItem('count', count)
@@ -279,7 +281,7 @@ So while we still create a new function every render (to pass to `useCallback`),
 
 🔥 "Value stability" and "Memoization" [Memoization and React](https://epicreact.dev/memoization-and-react)
 
-### React.useContext
+### React.useContext <a id="useContext"></a>
 
 Sharing state between components is a common problem. The best solution for this is to [lift your state](https://reactjs.org/docs/lifting-state-up.html). This requires [prop drilling](https://kentcdodds.com/blog/prop-drilling) which is not a problem, but there are some times where prop drilling can cause a real pain.
 
@@ -464,6 +466,96 @@ Note that NOT exporting CountContext is intentional. We expose only one way to p
 5. Keep in mind that while context makes sharing state easy, it's not the only solution to Prop Drilling pains and it's not necessarily the best solution either. React's composition model is powerful and can be used to avoid issues with prop drilling as well. Learn more about this from [Michael Jackson on Twitter](https://twitter.com/mjackson/status/1195495535483817984)
 
 
+### `React.useLayoutEffect` <a id="useLayoutEffect"></a>
+
+`useEffect` and `useLayoutEffect` both of these can be used to do basically the same thing, but they have slightly different use cases. So here are some rules for you to consider when deciding which React Hook to use.
+
+* `useEffect`: 99% of the time this is what you want to use. **The one catch** is that this runs after react renders your component and ensures that your effect callback does not block browser painting.
+
+  However, if your effect is mutating the DOM (via a DOM node ref) and the DOM mutation will change the appearance of the DOM node between the time that it is rendered and your effect mutates it, then you don't want to use useEffect. You'll want to use useLayoutEffect. Otherwise the user could see a flicker when your DOM mutations take effect. **This is pretty much the only time you want to avoid useEffect and use useLayoutEffect instead**.
+
+* `useLayoutEffect`: This runs synchronously immediately after React has performed all DOM mutations. This can be useful if you need to make DOM measurements (like getting the scroll position or other styles for an element) and then make DOM mutations or trigger a synchronous re-render by updating state.
+
+  Your code runs immediately after the DOM has been updated, but before the browser has had a chance to "paint" those changes (the user doesn't actually see the updates until after the browser has repainted).
+
+#### Example
+We have a chatbox and when you click on `add message`, we automatically scroll to the bottom from chatbox. When you remove a message, then we automatically scroll you to the bottom. That way, we keep the user at the latest message of messages that we have in this little chatbox.
+
+For example:
+```javascript
+function MessagesDisplay() {
+  const containerRef = React.useRef();
+
+  React.useEffect(() => {
+    containerRef.current.scrollTop = containerRef.current.scrollHeight;
+  });
+
+  return (
+    <div ref={containerRef} role="log">
+      <ListMessages />
+    </div>
+  );
+}
+```
+
+If we use `useEffect`, you'll also notice that the message shows up before the scroll happens. That's not a super-great experience for the users of our app.
+
+Let's switch this over to useLayoutEffect, but we don't see the message appear before we scroll. That scroll happens at the same time the message appears. That's exactly the behavior that we want, and here's the real difference.
+
+When we use layout effects, we can change stuff in the DOM before the browser has a chance to paint the screen. The browser only has to paint the screen once, and the user only will see that update that one time. Anytime you have a side effect that's going to manipulate the DOM in a way that's observable to the user, you want to do that in a useLayoutEffect.
+
+To bring it down to a rule, you use useEffect almost all of the time, and you useLayoutEffect if the side effect that you are performing makes an observable change to the DOM that will require the browser to paint that update that you've made.
+
+#### Summary
+
+* `useLayoutEffect:` If you need to mutate the DOM and/or do need to perform measurements
+* `useEffect:` If you don't need to interact with the DOM at all or your DOM changes are unobservable (seriously, most of the time you should use this).
+
+#### Conclusion
+
+It's all about defaults. The default behavior is to let the browser re-paint based on DOM updates before React runs your code. This means your code won't block the browser and the user sees updates to the DOM sooner. So stick with useEffect most of the time.
+
+### `React.useDebugValue` <a id="useDebugValue"></a>
+
+When you start writing custom hooks, it can be useful to give them a special label. This is especially useful to differentiate different usages of the same hook in a given component when you inspect it in React DevTools Browser Extension.
+
+This is where `useDebugValue` comes in. You use it in a custom hook, and you call it like so:
+
+```javascript
+function useCount({initialCount = 0, step = 1} = {}) {
+  React.useDebugValue({initialCount, step})
+  const [count, setCount] = React.useState(0)
+  const increment = () => setCount(c => c + step)
+  return [count, increment]
+}
+```
+
+So now when people use the `useCount` hook, they'll see the `initialCount` and `step` values for that particular hook. That gives us a bit of nicer experience when using the dev tools for our custom hooks.
+
+As a reminder, this would not work inside a component. This is just to label custom hooks.
+
+#### Second Parameter
+`useDebugValue` also takes a second argument which is an optional formatter function, allowing you to do stuff like this if you like:
+
+```javascript
+const formatCountDebugValue = ({initialCount, step}) =>
+  `init: ${initialCount}; step: ${step}`;
+
+function useCount({initialCount = 0, step = 1} = {}) {
+  React.useDebugValue({initialCount, step}, formatCountDebugValue);
+  const [count, setCount] = React.useState(0);
+  const increment = () => setCount(c => c + step);
+  return [count, increment];
+}
+```
+
+The reason this exists is that let's assume that calculating this DebugValue was computationally expensive for one reason or another. We don't want to call that function and execute that computation if our users don't need that.
+
+The only users who need this label are those developer users who are using this in their development workflow. The end-users will never have the DevTools open. They'll never see this DebugValue. Making this computation for that DebugValue is a waste of their resources.
+
+If you ever have a computationally expensive value to use with your useDebugValue, then you pass all of the things that you need for calculating that value as a first argument. Then the second argument is a function that will accept those values and return the DebugValue you want to be assigned.
+
+
 ### React Hook Flow
 Understanding the order in which React hooks are called can be really helpful in using React hooks effectively. This [demo](https://agitated-cori-c5df24.netlify.app) will explore the lifecycle of a function component with hooks with colorful console log statements so it can help to visualize the way that your React components mount and update and unmount and the order in which things are run.
 
@@ -625,7 +717,7 @@ function MyComponent() {
   const asyncCallback = React.useCallback(() => {
     return fetchAPI(dependencie);
   }, [dependencie]);
-  
+
   const state = useAsync(
     asyncCallback,
     {prop1: initialValue1, prop2: initialValue2},
@@ -743,3 +835,4 @@ function App() {
 ## Add-Ons
 
 * [Closure](https://whatthefork.is/closure)
+* [Imperative vs Declarative Programming](https://ui.dev/imperative-vs-declarative-programming/)
