@@ -464,6 +464,12 @@ Note that NOT exporting CountContext is intentional. We expose only one way to p
 3. You can (and probably should) have multiple logically separated contexts in your app.
 4. Context also has the unique ability to be scoped to a specific section of the React component tree. A common mistake of context (and generally any “application” state) is to make it globally available anywhere in your application when it’s actually only needed to be available in a part of the app (like a single page). Keeping a context value scoped to the area that needs it most has improved performance and maintainability characteristics.
 5. Keep in mind that while context makes sharing state easy, it's not the only solution to Prop Drilling pains and it's not necessarily the best solution either. React's composition model is powerful and can be used to avoid issues with prop drilling as well. Learn more about this from [Michael Jackson on Twitter](https://twitter.com/mjackson/status/1195495535483817984)
+6. You may notice that the context provider/consumers in React DevTools just display as `Context.Provider` and `Context.Consumer`. That doesn't do a good job differentiating itself from other contexts that may be in your app. Luckily, you can set the context `displayName` and it'll display that name for
+the `Provider` and `Consumer`. Hopefully in the future this will happen automatically ([learn more](https://github.com/babel/babel/issues/11241)).
+```javascript
+const MyContext = React.createContext()
+MyContext.displayName = 'MyContext'
+```
 
 
 ### `React.useLayoutEffect` <a id="useLayoutEffect"></a>
@@ -829,6 +835,189 @@ function App() {
       <ComponentThatMayError />
     </ErrorBoundary>
   );
+}
+```
+
+## React Patterns
+
+### Context Module Functions
+
+Let's take a look at an example of a simple context and a reducer combo:
+
+```javascript
+// src/context/counter.js
+const CounterContext = React.createContext()
+
+function CounterProvider({step = 1, initialCount = 0, ...props}) {
+  const [state, dispatch] = React.useReducer(
+    (state, action) => {
+      const change = action.step ?? step
+      switch (action.type) {
+        case 'increment': {
+          return {...state, count: state.count + change}
+        }
+        case 'decrement': {
+          return {...state, count: state.count - change}
+        }
+        default: {
+          throw new Error(`Unhandled action type: ${action.type}`)
+        }
+      }
+    },
+    {count: initialCount},
+  )
+
+  const value = [state, dispatch]
+  return <CounterContext.Provider value={value} {...props} />
+}
+
+function useCounter() {
+  const context = React.useContext(CounterContext)
+  if (context === undefined) {
+    throw new Error(`useCounter must be used within a CounterProvider`)
+  }
+  return context
+}
+
+export {CounterProvider, useCounter}
+```
+
+```javascript
+// src/screens/counter.js
+import {useCounter} from 'context/counter'
+
+function Counter() {
+  const [state, dispatch] = useCounter()
+  // Take this logic and move it into one of these context of module functions, so you can simplify the code for the user of context.
+  const increment = () => dispatch({type: 'increment'})
+  const decrement = () => dispatch({type: 'decrement'})
+  return (
+    <div>
+      <div>Current Count: {state.count}</div>
+      <button onClick={decrement}>-</button>
+      <button onClick={increment}>+</button>
+    </div>
+  )
+}
+```
+
+```javascript
+// src/index.js
+import {CounterProvider} from 'context/counter'
+
+function App() {
+  return (
+    <CounterProvider>
+      <Counter />
+    </CounterProvider>
+  )
+}
+```
+
+I want to focus in on the user of our reducer (the `Counter` component). Notice that they have to create their own `increment` and `decrement` functions which call `dispatch`. I don't think that's a super great API. It becomes even more of an annoyance when you have a sequence of `dispatch` functions that need to be called.
+
+The first inclination is to create "helper" functions and include them in the context. You'll notice that we HAVE to put it in `React.useCallback` so we can list our "helper" functions in dependency lists:
+
+```javascript
+const increment = React.useCallback(() => dispatch({type: 'increment'}), [
+  dispatch,
+])
+const decrement = React.useCallback(() => dispatch({type: 'decrement'}), [
+  dispatch,
+])
+const value = {state, increment, decrement}
+return <CounterContext.Provider value={value} {...props} />
+
+// now users can consume it like this:
+
+const {state, increment, decrement} = useCounter()
+```
+
+This isn't a _bad_ solution necessarily. But [as Dan Abramov says](https://twitter.com/dan_abramov/status/1125758606765383680):
+
+> Helper methods are object junk that we need to recreate and compare for no
+> purpose other than superficially nicer looking syntax.
+
+What Dan recommends (and what Facebook does) is pass dispatch as we had originally. And to solve the annoyance we were trying to solve in the first place, they use importable "helpers" that accept `dispatch`. Let's take a look at how that would look:
+
+```javascript
+// src/context/counter.js
+const CounterContext = React.createContext()
+
+function CounterProvider({step = 1, initialCount = 0, ...props}) {
+  const [state, dispatch] = React.useReducer(
+    (state, action) => {
+      const change = action.step ?? step
+      switch (action.type) {
+        case 'increment': {
+          return {...state, count: state.count + change}
+        }
+        case 'decrement': {
+          return {...state, count: state.count - change}
+        }
+        default: {
+          throw new Error(`Unhandled action type: ${action.type}`)
+        }
+      }
+    },
+    {count: initialCount},
+  )
+
+  const value = [state, dispatch]
+
+  return <CounterContext.Provider value={value} {...props} />
+}
+
+function useCounter() {
+  const context = React.useContext(CounterContext)
+  if (context === undefined) {
+    throw new Error(`useCounter must be used within a CounterProvider`)
+  }
+  return context
+}
+
+const increment = dispatch => dispatch({type: 'increment'})
+const decrement = dispatch => dispatch({type: 'decrement'})
+
+export {CounterProvider, useCounter, increment, decrement}
+```
+
+```javascript
+// src/screens/counter.js
+import {useCounter, increment, decrement} from 'context/counter'
+
+function Counter() {
+  const [state, dispatch] = useCounter()
+  return (
+    <div>
+      <div>Current Count: {state.count}</div>
+      <button onClick={() => decrement(dispatch)}>-</button>
+      <button onClick={() => increment(dispatch)}>+</button>
+    </div>
+  )
+}
+```
+
+In some situations this pattern can not only help you reduce duplication, but it also [helps improve performance](https://twitter.com/dan_abramov/status/1125774170154065920) and helps you avoid mistakes in dependency lists.
+
+The benefit of doing things this way is that when we have multiple dispatches that we're going to be calling, if we just leave that up to the user of our context, it's possible that they might miss a dispatch call. It's better to pass that user dispatch to this context module function so it can ensure that we're calling the dispatch in the right order.
+
+A common thing that people will do instead is they'll put the "helpers" inside of their consuming hook or maybe even inside of the value, but then you have to worry about memorizing a whole bunch of stuff to make sure that you can use these functions inside of a useEffect dependency list or a useCallback dependency list. That can have a spidering effect across your entire code base.
+
+In situations where you have multiple dispatch calls that you need to make for asynchronous UI updates like this, you can make a context module function that accepts that dispatch, as well as anything else that's needed, and that can manage to call dispatch correctly.
+
+```javascript
+// Helper function
+async function updateUser(dispatch, user, updates) {
+  dispatch({type: 'start update', updates});
+  try {
+    const updatedUser = await userClient.updateUser(user, updates);
+    dispatch({type: 'finish update', updatedUser});
+    return updatedUser;
+  } catch (error) {
+    dispatch({type: 'fail update', error});
+    throw error;
+  }
 }
 ```
 
