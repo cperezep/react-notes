@@ -838,9 +838,9 @@ function App() {
 }
 ```
 
-## React Patterns
+# React Patterns
 
-### Context Module Functions
+## Context Module Functions
 
 Let's take a look at an example of a simple context and a reducer combo:
 
@@ -1020,6 +1020,350 @@ async function updateUser(dispatch, user, updates) {
   }
 }
 ```
+
+## Compound Components
+Compound components are components that work together to form a complete UI. The classic example of this is `<select>` and `<option>` in HTML:
+
+```html
+<select>
+  <option value="1">Option 1</option>
+  <option value="2">Option 2</option>
+</select>
+```
+
+The `<select>` is the element responsible for managing the state of the UI, and the `<option>` elements are essentially more configuration for how the select should operate (specifically, which options are available and their values).
+
+Let's imagine that we were going to implement this native control manually. A naive implementation would look something like this:
+
+```jsx
+<CustomSelect
+  options={[
+    {value: '1', display: 'Option 1'},
+    {value: '2', display: 'Option 2'},
+  ]}
+/>
+```
+
+This works fine, but it's less extensible/flexible than a compound components API. For example. What if I want to supply additional attributes on the `<option>` that's rendered, or I want the `display` to change based on whether it's selected? We can easily add API surface area to support these use cases,
+but that's just more for us to code and more for users to learn. That's where compound components come in really handy!
+
+**Real World Projects that use this pattern:**
+
+- [`@reach/tabs`](https://reacttraining.com/reach-ui/tabs)
+
+**Example**
+
+We have a Toggle component that manages the state, and we want to render different parts of the UI however we want control over the presentation of the UI.
+```javascript
+import * as React from 'react';
+import {Switch} from '../switch';
+
+function Toggle({children}) {
+  const [on, setOn] = React.useState(false);
+  const toggle = () => setOn(!on);
+
+  // React.Children.map: It works especially for React.Children because the children prop can be a single element, or it can be an array of elements.
+  return React.Children.map(children, child => {
+    return React.cloneElement(child, {on, toggle});
+  });
+}
+
+/** <ToggleOn /> renders children when the on state is true */
+const ToggleOn = ({on, children}) => (on ? children : null);
+
+/** <ToggleOff /> renders children when the on state is false */
+const ToggleOff = ({on, children}) => (on ? null : children);
+
+/** <ToggleButton /> renders the <Switch /> with the on prop set to the on state and the onClick prop set to toggle. */
+const ToggleButton = ({on, toggle}) => <Switch on={on} onClick={toggle} />;
+
+function App() {
+  return (
+    <div>
+      <Toggle>
+        <ToggleOn>The button is on</ToggleOn>
+        <ToggleOff>The button is off</ToggleOff>
+        <ToggleButton />
+      </Toggle>
+    </div>
+  );
+}
+
+export default App;
+```
+The fundamental challenge face with an API like this is the state shared between the components is implicit, meaning that the developer using your component cannot actually see or interact with the state (on) or the mechanisms for updating that state (toggle) that are being shared between the components.
+
+## Flexible Compound Components
+The last component can only clone and pass props to immediate children. So if we need some way for the compound components to implicitly accept the on state and toggle method regardless of where they're rendered within the Toggle
+component's "posterity".
+
+The way we do this is through context `React.createContext`.
+
+**Real World Projects that use this pattern:**
+
+- [`@reach/accordion`](https://reacttraining.com/reach-ui/accordion)
+
+**Example**
+```javascript
+import * as React from 'react';
+import {Switch} from '../switch';
+
+const ToggleContext = React.createContext();
+ToggleContext.displayName = 'ToggleContext';
+
+function Toggle({children}) {
+  const [on, setOn] = React.useState(false);
+  const toggle = () => setOn(!on);
+
+  const value = {on, toggle};
+  return (
+    <ToggleContext.Provider value={value}>{children}</ToggleContext.Provider>
+  );
+}
+
+function useToggle() {
+  const context = React.useContext(ToggleContext);
+  if (!context) {
+    throw new Error(`useToggle must be within a <Toggle />`);
+  }
+  return context;
+}
+
+function ToggleOn({children}) {
+  const {on} = useToggle();
+  return on ? children : null;
+}
+
+function ToggleOff({children}) {
+  const {on} = useToggle();
+  return on ? null : children;
+}
+
+function ToggleButton(props) {
+  const {on, toggle} = useToggle();
+  return <Switch on={on} onClick={toggle} {...props} />;
+}
+
+/* The fundamental difference between this code and the last one is that now we're going to allow people to render the compound components wherever they like in the render tree. */
+function App() {
+  return (
+    <div>
+      <Toggle>
+        <ToggleOn>The button is on</ToggleOn>
+        <ToggleOff>The button is off</ToggleOff>
+        <div>
+          <ToggleButton />
+        </div>
+      </Toggle>
+    </div>
+  );
+}
+
+export default App;
+```
+
+## State Reducer Pattern
+The benefit of the state reducer pattern is in the fact that it allows [Inversion of Control](https://kentcdodds.com/blog/inversion-of-control) which is basically a mechanism for the author of the API to allow the user of the API to control how things work internally.
+
+By inverting control of state updates with the state reducer pattern, I was able to enable their use case as well as any other use case people could possibly want when they want to change how it operates internally. Inversion of control is an enabling computer science principle and the state reducer pattern is an awesome implementation of that idea that translates even better to hooks than it did to regular components.
+
+### Using a State Reducer with Hooks
+
+The concept goes like this:
+
+1. End user does an action
+2. Dev calls dispatch
+3. Hook determines the necessary changes
+4. Hook calls dev's code for further changes 👈  this is the inversion of control part
+5. Hook makes the state changes
+
+**Example 1**
+```javascript
+// useCounter.js
+const actionTypes = {
+  increment: 'INCREMENT',
+  decrement: 'DECREMENT',
+}
+
+function internalReducer({ count }, { type, payload }) {
+  switch (type) {
+    case actionTypes.increment:
+      return {
+        count: Math.min(count + 1, payload.max)
+      };
+    case actionTypes.decrement:
+      return {
+        count: Math.max(0, count - 1)
+      };
+    default:
+      throw new Error(`Unhandled action type: ${type}`);
+  }
+};
+
+// Custom Hook Pattern
+/** This hook is accessible by the user and exposes several internal logics (States, Handlers), allowing him to have better control over your component */
+function useCounter({ initial, max }, reducer = internalReducer) {
+  const [{ count }, dispatch] = useReducer(reducer, { count: initial });
+
+  const handleIncrement = () => {
+    dispatch({ type: actionTypes.increment, payload: { max } });
+  };
+
+  const handleDecrement = () => {
+    dispatch({ actionTypes.decrement });
+  };
+
+  return {
+    count,
+    handleIncrement,
+    handleDecrement
+  };
+}
+
+useCounter.reducer = internalReducer;
+
+
+export { useCounter, actionTypes }
+```
+
+
+```javascript
+// Usage
+import { useCounter, actionTypes } from "./useCounter";
+
+function Counter() {
+  // Custom reducer
+  const reducer = (state, action) => {
+    switch (action.type) {
+      case actionTypes.decrement:
+        return {
+          count: Math.max(0, state.count - 2) // The decrement delta was changed for 2 (Default is 1)
+        };
+      default:
+        return useCounter.reducer(state, action);
+    }
+  };
+
+  const { count, handleIncrement, handleDecrement } = useCounter(
+    { initial: 0, max: 10 },
+    reducer
+  );
+
+  return (
+    <div>
+      <button onClick={handleDecrement}>Decrement</button>
+      <div>{count}</div>
+      <button onClick={handleIncrement}>Increment</button>
+    </div>
+  )
+}
+
+function App() {
+  return <Counter />
+}
+
+ReactDOM.render(<App />, document.getElementById('root'))
+```
+
+**Example 2**
+```javascript
+// useToggle.js
+const actionTypes = {
+  toggle: 'TOGGLE',
+  reset: 'RESET',
+};
+
+function toggleReducer(state, {type, initialState}) {
+  switch (type) {
+    case actionTypes.toggle: {
+      return {on: !state.on};
+    }
+    case actionTypes.reset: {
+      return initialState;
+    }
+    default: {
+      throw new Error(`Unsupported type: ${type}`);
+    }
+  }
+}
+
+function useToggle({initialOn = false, reducer = toggleReducer} = {}) {
+  const {current: initialState} = React.useRef({on: initialOn});
+  const [state, dispatch] = React.useReducer(reducer, initialState);
+  const {on} = state;
+
+  const toggle = () => dispatch({type: actionTypes.toggle});
+  const reset = () => dispatch({type: actionTypes.reset, initialState});
+
+  return {on, reset, toggle};
+}
+
+export {useToggle, toggleReducer, actionTypes};
+```
+
+```javascript
+// Usage
+import {useToggle, toggleReducer, actionTypes} from './useToggle';
+
+function App() {
+  const [timesClicked, setTimesClicked] = React.useState(0);
+  const clickedTooMuch = timesClicked >= 4;
+
+  // "If the action.type is 'toggle' AND I clicked 4 times, then I can return this right here."
+  // Otherwise, I'll return the toggleReducer with that state and that action.
+  function toggleStateReducer(state, action) {
+    if (action.type === actionTypes.toggle && timesClicked >= 4) {
+      return {on: state.on};
+    }
+    return toggleReducer(state, action);
+  }
+
+  const {on, toggle, reset} = useToggle({
+    reducer: toggleStateReducer,
+  });
+
+  return (
+    <div>
+      <Switch
+        onClick={() => {
+          toggle();
+          setTimesClicked(count => count + 1);
+        }}
+        on={on}
+      />
+      {clickedTooMuch ? (
+        <div data-testid="notice">
+          Whoa, you clicked too much!
+          <br />
+        </div>
+      ) : timesClicked > 0 ? (
+        <div data-testid="click-count">Click count: {timesClicked}</div>
+      ) : null}
+      <button
+        onClick={() => {
+          reset();
+          setTimesClicked(0);
+        }}
+      >
+        Reset
+      </button>
+    </div>
+  );
+}
+
+export default App;
+```
+
+
+The most advanced pattern in terms of inversion of control. It gives an advanced way for the user to change how your component operates internally.
+
+The code is similar to `Custom Hook Pattern`, but in addition the user defines a reducer which is passed to the hook. This reducer will overload any internal action of your component.
+This makes our hook WAY more flexible, but it also means that the way we update state is now part of the API and if we make changes to how that happens, then it could be a breaking change for users.
+All your internal component’s actions are now accessible from the outside and can be overridden. It's totally worth the trade-off for complex hooks/components, but it's just good to keep that in mind.
+
+**Source**
+* [The State Reducer Pattern with React Hooks](https://kentcdodds.com/blog/the-state-reducer-pattern-with-react-hooks)
+* [5 Advanced React Patterns](https://javascript.plainenglish.io/5-advanced-react-patterns-a6b7624267a6)
 
 ## Add-Ons
 
