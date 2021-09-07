@@ -1365,6 +1365,198 @@ All your internal component’s actions are now accessible from the outside and 
 * [The State Reducer Pattern with React Hooks](https://kentcdodds.com/blog/the-state-reducer-pattern-with-react-hooks)
 * [5 Advanced React Patterns](https://javascript.plainenglish.io/5-advanced-react-patterns-a6b7624267a6)
 
+## Control Props
+Sometimes, people want to be able to manage the internal state of our component from the outside. The state reducer allows them to manage what state changes are made when a state change happens, but sometimes people may want to make state changes themselves. We can allow them to do this with a feature called "Control Props."
+
+This pattern transforms your component into a [controlled component](https://reactjs.org/docs/forms.html#controlled-components). An external state is consumed as a “single source of truth” allowing the user to insert custom logic that will modify the default component behavior.
+
+```javascript
+function MyCapitalizedInput() {
+  const [capitalizedValue, setCapitalizedValue] = React.useState('')
+
+  return (
+    <input
+      value={capitalizedValue}
+      onChange={e => setCapitalizedValue(e.target.value.toUpperCase())}
+    />
+  )
+}
+```
+
+In this case, the "component" that's implemented the "control props" pattern is the `<input />`. Normally it controls state itself (like if you render `<input />` by itself with no `value` prop). But once you add the `value` prop, suddenly the `<input />` takes the back seat and instead makes "suggestions" to you via the `onChange` prop on the state updates that it would normally make itself.
+
+This flexibility allows us to change how the state is managed and it also allows us to programmatically change the state whenever we want to.
+
+**Example 1**
+```javascript
+// Counter.js
+function Counter({ value = null, initialValue = 0, onChange }) {
+  const [count, setCount] = useState(initialValue);
+
+  const isControlled = value !== null && !!onChange;
+
+  const getCount = () => (isControlled ? value : count);
+
+  const handleCountChange = (newValue) => {
+    isControlled ? onChange(newValue) : setCount(newValue);
+  };
+
+  const handleIncrement = () => {
+    handleCountChange(getCount() + 1);
+  };
+
+  const handleDecrement = () => {
+    handleCountChange(Math.max(0, getCount() - 1));
+  };
+
+  return (
+    <div>
+      <button onClick={handleDecrement}>Decrement</button>
+      <div>{getCount()}</div>
+      <button onClick={handleIncrement}>Increment</button>
+    </div>
+  );
+}
+
+export { Counter };
+```
+
+```javascript
+// Usage
+import { Counter } from "./Counter";
+
+function App() {
+  const [count, setCount] = useState(0);
+
+  const handleChangeCounter = (newCount) => {
+    setCount(newCount);
+  };
+  return (
+    <Counter value={count} onChange={handleChangeCounter} />
+  );
+}
+
+ReactDOM.render(<App />, document.getElementById('root'));
+```
+
+**Example 2**
+```javascript
+// useToggle.js
+const actionTypes = {
+  toggle: 'toggle',
+  reset: 'reset',
+};
+
+function toggleReducer(state, {type, initialState}) {
+  switch (type) {
+    case actionTypes.toggle: {
+      return {on: !state.on};
+    }
+    case actionTypes.reset: {
+      return initialState;
+    }
+    default: {
+      throw new Error(`Unsupported type: ${type}`);
+    }
+  }
+}
+
+function useToggle({
+  initialOn = false,
+  reducer = toggleReducer,
+  onChange,
+  on: controlledOn,
+} = {}) {
+  const {current: initialState} = React.useRef({on: initialOn});
+  const [state, dispatch] = React.useReducer(reducer, initialState);
+
+  const isControlled = controlledOn != null;
+  const on = isControlled ? controlledOn : state.on;
+
+  function dispatchWithOnChange(action) {
+    if (!isControlled) {
+      dispatch(action);
+    }
+    // onChange only is executed it's provided
+    onChange?.(reducer({...state, on}, action), action);
+  }
+
+  const toggle = () => dispatchWithOnChange({type: actionTypes.toggle});
+  const reset = () => dispatchWithOnChange({type: actionTypes.reset, initialState});
+
+  return { on, reset, toggle };
+}
+
+export {useToggle, toggleReducer, actionTypes};
+```
+
+```javascript
+import { useToggle } from './useToggle';
+
+// Toggle.js
+function Toggle({on: controlledOn, onChange}) {
+  const {on, toggle} = useToggle({on: controlledOn, onChange});
+
+  return <Switch onClick={toggle} on={on} />;
+}
+
+export { Toggle };
+```
+
+```javascript
+// Usage
+import { actionTypes } from './useToggle';
+import { Toggle } from './Toggle';
+
+function App() {
+  const [bothOn, setBothOn] = React.useState(false);
+  const [timesClicked, setTimesClicked] = React.useState(0);
+
+  function handleToggleChange(state, action) {
+    if (action.type === actionTypes.toggle && timesClicked > 4) {
+      return;
+    }
+    setBothOn(state.on);
+    setTimesClicked(c => c + 1);
+  }
+
+  function handleResetClick() {
+    setBothOn(false);
+    setTimesClicked(0);
+  }
+
+  return (
+    <div>
+      <div>
+        <Toggle on={bothOn} onChange={handleToggleChange} />
+        <Toggle on={bothOn} onChange={handleToggleChange} />
+      </div>
+      {timesClicked > 4 ? (
+        <div data-testid="notice">
+          Whoa, you clicked too much!
+          <br />
+        </div>
+      ) : (
+        <div data-testid="click-count">Click count: {timesClicked}</div>
+      )}
+      <button onClick={handleResetClick}>Reset</button>
+      <hr />
+      <div>
+        <div>Uncontrolled Toggle:</div>
+        <Toggle />
+      </div>
+    </div>
+  );
+}
+
+export default App;
+```
+
+**Real World Projects that use this pattern:**
+
+- [downshift](https://github.com/downshift-js/downshift)
+- [`@reach/listbox`](https://reacttraining.com/reach-ui/listbox)
+
 ## Add-Ons
 
 * [Closure](https://whatthefork.is/closure)
