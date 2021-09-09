@@ -1,4 +1,9 @@
-## React Hooks
+# React
+
+- [`React Hooks`](#reactHooks)
+- [`React Patterns`](#reactPatterns)
+
+## React Hooks <a id="reactHooks"></a>
 
 Normally an interactive application will need to hold state somewhere. In React, you use special functions called "hooks" to do this. Common built-in hooks include:
 
@@ -838,9 +843,16 @@ function App() {
 }
 ```
 
-# React Patterns
+# React Patterns <a id="reactPatterns"></a>
 
-## Context Module Functions
+- [`Context Module Functions`](#contextModuleFunctions)
+- [`Compound Components`](#compoundComponents)
+- [`Flexible Compound Components`](#flexibleCompoundComponents)
+- [`Prop Collections and Getters`](#propCollectionsGetters)
+- [`State Reducer`](#stateReducer)
+- [`Control Props`](#controlProps)
+
+## Context Module Functions <a id="contextModuleFunctions"></a>
 
 Let's take a look at an example of a simple context and a reducer combo:
 
@@ -1021,7 +1033,7 @@ async function updateUser(dispatch, user, updates) {
 }
 ```
 
-## Compound Components
+## Compound Components <a id="compoundComponents"></a>
 Compound components are components that work together to form a complete UI. The classic example of this is `<select>` and `<option>` in HTML:
 
 ```html
@@ -1093,7 +1105,7 @@ export default App;
 ```
 The fundamental challenge face with an API like this is the state shared between the components is implicit, meaning that the developer using your component cannot actually see or interact with the state (on) or the mechanisms for updating that state (toggle) that are being shared between the components.
 
-## Flexible Compound Components
+## Flexible Compound Components <a id="flexibleCompoundComponents"></a>
 The last component can only clone and pass props to immediate children. So if we need some way for the compound components to implicitly accept the on state and toggle method regardless of where they're rendered within the Toggle
 component's "posterity".
 
@@ -1162,7 +1174,127 @@ function App() {
 export default App;
 ```
 
-## State Reducer Pattern
+## Prop Collections and Getters <a id="propCollectionsGetters"></a>
+The Props Getters Pattern instead of exposing native props, we provide a shortlist of props getters. A getter is a function that returns many props, it has a meaningful name allowing the user to naturally link it to the right JSX element.
+
+Lots of the reusable/flexible components and hooks that we'll create have some common use-cases and it'd be cool if we could make it easier to use our components and hooks the right way without requiring people to wire things up for common use cases.
+
+In typical UI components, you need to take accessibility into account. For a button functioning as a toggle, it should have the `aria-pressed` attribute set to `true` or `false` if it's toggled on or off.
+
+**Example**
+```javascript
+function useToggle() {
+  const [on, setOn] = React.useState(false);
+  const toggle = () => setOn(!on);
+
+  const togglerProps = {
+    'aria-pressed': on,
+    onClick: toggle,
+  };
+  return {on, toggle, togglerProps};
+}
+
+function App() {
+  const {on, togglerProps} = useToggle();
+  return (
+    <div>
+      <Switch on={on} {...togglerProps} />
+      <hr />
+      <button aria-label="custom-button" {...togglerProps}>
+        {on ? 'on' : 'off'}
+      </button>
+    </div>
+  );
+}
+```
+
+But, what happen if someone wants to use our `togglerProps` object, but they need to apply their own `onClick` handler? So that instead of having an object of props, we call a function to get the props. Then we can pass that function the props we want applied and that function will be responsible for composing the props together.
+
+**Example**
+```javascript
+// useToggle.js
+function useToggle() {
+  const [on, setOn] = React.useState(false);
+  const toggle = () => setOn(!on);
+
+  // Destructure this so that I can grab the onClick if it's provided,
+  // and then we'll take the rest of the props
+  function getTogglerProps({onClick, ...props} = {}) {
+    return {
+      'aria-pressed': on,
+      onClick: () => {
+        onClick && onClick();
+        toggle();
+      },
+      ...props,
+    };
+  }
+
+  // That's actually what we would recommend. We don't typically use prop collections.
+  // I defer to prop getters because they're more flexible in that they allow me to
+  // compose things together.
+  return {on, toggle, getTogglerProps};
+}
+```
+
+```javascript
+// Usage
+function App() {
+  const {on, getTogglerProps} = useToggle()
+  return (
+    <div>
+      <Switch {...getTogglerProps({on})} />
+      <hr />
+      <button
+        {...getTogglerProps({
+          'aria-label': 'custom-button',
+          onClick: () => console.info('onButtonClick'),
+          id: 'custom-button-id',
+        })}
+      >
+        {on ? 'on' : 'off'}
+      </button>
+    </div>
+  )
+}
+```
+
+Let's going to improve the previous hook making this fancy function called callAll(). This is going to take any number of functions, and then it's going to return a function that takes any number of arguments. We don't care what those arguments are. We'll take those functions. For each of those, we'll take that function. If that function exists, then we'll call that function with all the args. Basically, it's a function that We can call passing any number of functions that will return a function that calls all those functions.
+
+```javascript
+function callAll(...fns) {
+  return (...args) => {
+    fns.forEach(fn => {
+      fn && fn(...args);
+    });
+  };
+}
+
+function useToggle() {
+  const [on, setOn] = React.useState(false);
+  const toggle = () => setOn(!on);
+
+  function getTogglerProps({onClick, ...props} = {}) {
+    return {
+      'aria-pressed': on,
+      onClick: callAll(onClick, toggle),
+      ...props,
+    };
+  }
+
+  return {on, toggle, getTogglerProps};
+}
+```
+
+**Real World Projects that use this pattern:**
+
+- [downshift](https://github.com/downshift-js/downshift) (uses prop getters)
+- [react-table](https://github.com/tannerlinsley/react-table) (uses prop
+  getters)
+- [`@reach/tooltip`](https://reacttraining.com/reach-ui/tooltip) (uses prop
+  collections)
+
+## State Reducer <a id="stateReducer"></a>
 The benefit of the state reducer pattern is in the fact that it allows [Inversion of Control](https://kentcdodds.com/blog/inversion-of-control) which is basically a mechanism for the author of the API to allow the user of the API to control how things work internally.
 
 By inverting control of state updates with the state reducer pattern, I was able to enable their use case as well as any other use case people could possibly want when they want to change how it operates internally. Inversion of control is an enabling computer science principle and the state reducer pattern is an awesome implementation of that idea that translates even better to hooks than it did to regular components.
@@ -1354,7 +1486,6 @@ function App() {
 export default App;
 ```
 
-
 The most advanced pattern in terms of inversion of control. It gives an advanced way for the user to change how your component operates internally.
 
 The code is similar to `Custom Hook Pattern`, but in addition the user defines a reducer which is passed to the hook. This reducer will overload any internal action of your component.
@@ -1365,7 +1496,7 @@ All your internal component’s actions are now accessible from the outside and 
 * [The State Reducer Pattern with React Hooks](https://kentcdodds.com/blog/the-state-reducer-pattern-with-react-hooks)
 * [5 Advanced React Patterns](https://javascript.plainenglish.io/5-advanced-react-patterns-a6b7624267a6)
 
-## Control Props
+## Control Props <a id="controlProps"></a>
 Sometimes, people want to be able to manage the internal state of our component from the outside. The state reducer allows them to manage what state changes are made when a state change happens, but sometimes people may want to make state changes themselves. We can allow them to do this with a feature called "Control Props."
 
 This pattern transforms your component into a [controlled component](https://reactjs.org/docs/forms.html#controlled-components). An external state is consumed as a “single source of truth” allowing the user to insert custom logic that will modify the default component behavior.
