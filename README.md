@@ -2,6 +2,7 @@
 
 - [`React Hooks`](#reactHooks)
 - [`React Patterns`](#reactPatterns)
+- [`React Testing`](#reactTesting)
 
 ## React Hooks <a id="reactHooks"></a>
 
@@ -1687,6 +1688,224 @@ export default App;
 
 - [downshift](https://github.com/downshift-js/downshift)
 - [`@reach/listbox`](https://reacttraining.com/reach-ui/listbox)
+
+
+# React Testing <a id="reactTesting"></a>
+
+Everything we do with testing our React components is walking the line of trade-offs of getting our tests to resemble the way our software is actually used and having something that's reasonably possible for testing.
+
+When we think about how things are used, we need to consider who the users are:
+
+1. The end user that's interacting with our code (clicking buttons/etc)
+2. The developer user that's actually using our code (rendering it, calling our functions, etc.)
+
+Often a _third_ user creeps into our tests and we want to avoid them as much as possible: [The Test User](https://kentcdodds.com/blog/avoid-the-test-user).
+
+When it comes to React components, our developer user will render our component with `ReactDOM` and in some cases they'll pass props and/or wrap it in a context provider. The end user will click buttons
+and assert on the output.
+
+## *Example*
+We have a simple counter component. The test will sure that it starts out saying "Current count: 0" and that when the user clicks "Increment" it'll increase the count and when they click "Decrement" it'll
+decrease the count.
+
+To do this, we'll need to create a DOM node, add it to the body, and render the component to that DOM node. You'll also need to clean up the DOM when your test is finished so the next test has a clean DOM to interact with.
+```typescript
+import ReactDOM from 'react-dom';
+import Counter from '../../components/counter';
+
+beforeEach(() => {
+  // cleaning up your environment between each one of your tests, so that your tests can run in total isolation of each other.
+  document.body.innerHTML = '';
+});
+
+test('counter increments and decrements when the buttons are clicked', () => {
+  const div = document.createElement('div');
+  document.body.append(div);
+
+  ReactDOM.render(<Counter />, div);
+  console.log(document.body.innerHTML);
+
+  // TypeScript doesn't trust the DOM very much, so you'll need to verify
+  // things are what they should be to make TypeScript happy here.
+  const [decrement, increment] = Array.from(div.querySelectorAll('button'));
+  if (!decrement || !increment) {
+    throw new Error('decrement and increment not found');
+  }
+  if (!(div.firstChild instanceof HTMLElement)) {
+    throw new Error('first child is not a div');
+  }
+
+  const message = div.firstChild.querySelector('div');
+  if (!message) {
+    throw new Error(`couldn't find message div`);
+  }
+
+  console.log(message.textContent);
+  expect(message.textContent).toBe('Current count: 0');
+
+  increment.click();
+  expect(message.textContent).toBe('Current count: 1');
+
+  decrement.click();
+  expect(message.textContent).toBe('Current count: 0');
+
+  // clean up the DOM when the test is finished so the next test has a clean DOM to interact with
+  // If you don't cleanup, then it could impact other tests and/or cause a memory leak
+  // If the previous expect fails this will throws an error, meaning this next line of code does not run. Then is better approach if you clean DOM in the beforeEach method
+  // div.remove();
+});
+```
+
+### *Using a dispatchEvent*
+  Using `.click` on a DOM node works fine, but what if you wanted to fire an event that doesn't have a dedicated method (like mouseover). Rather than use `button.click()`, try using `button.dispatchEvent`: https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/dispatchEvent
+
+```typescript
+test('counter increments and decrements when the buttons are clicked', () => {
+  ...
+
+  // Using the mouseEvent constructor, and the dispatchEvent API, this aligns our test a little bit closer to the user's experience when they're actually using our component.
+  const incrementClickEvent = new MouseEvent('click', {
+    // That means that it will bubble up, which is important because React uses event delegation, and a bubbling is required for event delegation to work.
+    bubbles: true,
+    // Cancelable because that's how the event is going to be by default when the user clicks on the button
+    cancelable: true,
+    // Which turns this into a left-click.
+    button: 0,
+  });
+
+  increment.dispatchEvent(incrementClickEvent);
+  expect(message.textContent).toBe('Current count: 1');
+
+  const decrementClickEvent = new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+
+  decrement.dispatchEvent(decrementClickEvent);
+  expect(message.textContent).toBe('Current count: 0');
+
+  ...
+})
+```
+
+## Testing Library
+[React Testing Library](https:/testing-library.com/react) is the React implementation of the [DOM Testing Library](https://testing-library.com). Testing Library comes with a ton of really useful features.
+
+Here's a simple example of how to use this:
+
+```javascript
+import {render, fireEvent, screen} from '@testing-library/react'
+
+test('it works', () => {
+  const {container} = render(<Example />)
+  // container is the div that your component has been mounted onto.
+
+  const input = container.querySelector('input')
+  fireEvent.mouseEnter(input) // fires a mouseEnter event on the input
+
+  screen.debug() // logs the current state of the DOM (with syntax highlighting!)
+})
+```
+
+Notice the lack of `cleanup` functionality. That's thanks to
+`@testing-library/react`'s [auto-cleanup feature](https://testing-library.com/docs/react-testing-library/api#cleanup)
+
+Another automatic feature of React Testing Library is its handling of [React's `act` function](https://reactjs.org/docs/test-utils.html#act). If you've ever seen a warning about something not being wrapped in `act`, that's what we're talking about. As mentioned in the React docs, React Testing Library is recommended for avoiding the issues `act` is warning you about. You can learn more about this from my blog post [Fix the "not wrapped in act(...)" warning](https://kentcdodds.com/blog/fix-the-not-wrapped-in-act-warning)
+
+```typescript
+import {render, fireEvent} from '@testing-library/react';
+import Counter from '../../components/counter';
+
+// That cleanup is going to be managed for us by React Testing Library because we're using render.
+/* beforeEach(() => {
+  document.body.innerHTML = ''
+}) */
+
+test('counter increments and decrements when the buttons are clicked', () => {
+  // const div = document.createElement('div')
+  // document.body.append(div)
+  // ReactDOM.render(<Counter />, div);
+
+  // Note that React Testing Library's render doesn't need you to pass a `div`
+  // so you only need to pass one argument. render returns an object with a
+  // bunch of utilities on it. For now, let's just grab `container` which is
+  // the div that React Testing Library creates for us.
+  const {container} = render(<Counter />);
+
+  // const [decrement, increment] = div.querySelectorAll('button');
+  // const message = div.firstChild.querySelector('div');
+  const [decrement, increment] = Array.from(
+    container.querySelectorAll('button'),
+  );
+  if (!decrement || !increment) {
+    throw new Error('decrement and increment not found');
+  }
+  if (!(container.firstChild instanceof HTMLElement)) {
+    throw new Error('first child is not a div');
+  }
+
+  const message = container.firstChild.querySelector('div');
+  if (!message) {
+    throw new Error(`couldn't find message div`);
+  }
+
+  expect(message.textContent).toBe('Current count: 0');
+
+  /* const incrementClickEvent = new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+  increment.dispatchEvent(incrementClickEvent); */
+  fireEvent.click(increment);
+  expect(message.textContent).toBe('Current count: 1');
+
+  /* const decrementClickEvent = new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+  decrement.dispatchEvent(decrementClickEvent); */
+  fireEvent.click(decrement);
+  expect(message.textContent).toBe('Current count: 0');
+});
+```
+
+### Using @testing-library/jest-dom
+Testing Library also has a suite of assertions that can be installed with Jest. They're already added to this project, so you can switch from Jest's built-in assertions to more specific assertions which will give you better error messages. [`@testing-library/jest-dom`](http://testing-library.com/jest-dom).
+
+```typescript
+import {render, fireEvent} from '@testing-library/react';
+import Counter from '../../components/counter';
+
+test('counter increments and decrements when the buttons are clicked', () => {
+  const {container} = render(<Counter />);
+
+  const [decrement, increment] = Array.from(
+    container.querySelectorAll('button'),
+  );
+  if (!decrement || !increment) {
+    throw new Error('decrement and increment not found');
+  }
+  if (!(container.firstChild instanceof HTMLElement)) {
+    throw new Error('first child is not a div');
+  }
+
+  const message = container.firstChild.querySelector('div');
+  if (!message) {
+    throw new Error(`couldn't find message div`);
+  }
+
+  expect(message.textContent).toBe('Current count: 0');
+
+  fireEvent.click(increment);
+  expect(message).toHaveTextContent('Current count: 1');
+
+  fireEvent.click(decrement);
+  expect(message).toHaveTextContent('Current count: 0');
+});
+```
 
 ## Add-Ons
 
