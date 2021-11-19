@@ -1872,32 +1872,67 @@ test('counter increments and decrements when the buttons are clicked', () => {
 });
 ```
 
-### Using @testing-library/jest-dom
-Testing Library also has a suite of assertions that can be installed with Jest. They're already added to this project, so you can switch from Jest's built-in assertions to more specific assertions which will give you better error messages. [`@testing-library/jest-dom`](http://testing-library.com/jest-dom).
+### Avoid Implementation Details
+One of the most important things to remember about testing our software the way it is used is to avoid testing implementation details. "Implementation details" is a term referring to how an abstraction accomplishes a certain outcome. Thanks to the expressiveness of code, you can typically accomplish the same outcome using completely different implementation details.
+
+The implementation of your abstractions does not matter to the users of your abstraction and if you want to have confidence that it continues to work through refactors then **neither should your tests.**
+
+Here's a React example of this:
+
+```javascript
+function Counter() {
+  const [count, setCount] = React.useState(0)
+  const increment = () => setCount(c => c + 1)
+  return <button onClick={increment}>{count}</button>
+}
+```
+
+Here's one way you might access that `button` to click and assert on it:
+
+```javascript
+const {container} = render(<Counter />)
+container.firstChild // <-- that's the button
+```
+
+However, what if we changed it a bit:
+
+```javascript
+function Counter() {
+  const [count, setCount] = React.useState(0)
+  const increment = () => setCount(c => c + 1)
+  return (
+    <span>
+      <button onClick={increment}>{count}</button>
+    </span>
+  )
+}
+```
+
+Our tests would break!
+
+The only difference between these implementations is one wraps the button in a `span` and the other does not. The user does not observe or care about this difference, so we should write our tests in a way that passes in either case.
+
+So here's a better way to search for that button in our test that's implementation detail free and refactor friendly:
+
+```javascript
+render(<Counter />)
+screen.getByText('0') // <-- that's the button
+// or (even better) you can do this:
+screen.getByRole('button', {name: '0'}) // <-- that's the button
+```
 
 ```typescript
-import {render, fireEvent} from '@testing-library/react';
+import {render, screen, fireEvent} from '@testing-library/react';
 import Counter from '../../components/counter';
 
 test('counter increments and decrements when the buttons are clicked', () => {
-  const {container} = render(<Counter />);
+  render(<Counter />);
+  const decrement = screen.getByRole('button', {name: /decrement/i});
+  const increment = screen.getByRole('button', {name: /increment/i});
+  const message = screen.getByText(/current count/i);
 
-  const [decrement, increment] = Array.from(
-    container.querySelectorAll('button'),
-  );
-  if (!decrement || !increment) {
-    throw new Error('decrement and increment not found');
-  }
-  if (!(container.firstChild instanceof HTMLElement)) {
-    throw new Error('first child is not a div');
-  }
-
-  const message = container.firstChild.querySelector('div');
-  if (!message) {
-    throw new Error(`couldn't find message div`);
-  }
-
-  expect(message.textContent).toBe('Current count: 0');
+  // Notice that React Testing Library queries do null-checks for you automatically, so you can ditch all this null-checking stuff.
+  expect(message).toHaveTextContent('Current count: 0');
 
   fireEvent.click(increment);
   expect(message).toHaveTextContent('Current count: 1');
@@ -1906,6 +1941,206 @@ test('counter increments and decrements when the buttons are clicked', () => {
   expect(message).toHaveTextContent('Current count: 0');
 });
 ```
+
+There are several different queries that you can use. [Here](https://testing-library.com/docs/queries/about#priority) in the documentation, we described which one of these you should focus on first because you can get the same elements with different kinds of queries.
+
+There's also a cool site called [testing-playground.com](https://testing-playground.com/). Where you can actually put in some HTML and it will render that out over here and give you what query you should be using for that particular element.
+
+**Read more about**
+* [Testing Implementation Details](https://kentcdodds.com/blog/testing-implementation-details)
+* [Avoid the Test User](https://kentcdodds.com/blog/avoid-the-test-user)
+
+### Using @testing-library/jest-dom
+Testing Library also has a suite of assertions that can be installed with Jest. They're already added to this project, so you can switch from Jest's built-in assertions to more specific assertions which will give you better error messages. [`@testing-library/jest-dom`](http://testing-library.com/jest-dom).
+
+```typescript
+import {render, fireEvent} from '@testing-library/react';
+import Counter from '../../components/counter';
+
+test('counter increments and decrements when the buttons are clicked', () => {
+  render(<Counter />);
+  const decrement = screen.getByRole('button', {name: /decrement/i});
+  const increment = screen.getByRole('button', {name: /increment/i});
+  const message = screen.getByText(/current count/i);
+
+  // Notice that React Testing Library queries do null-checks for you automatically, so you can ditch all this null-checking stuff.
+  expect(message).toHaveTextContent('Current count: 0');
+
+  fireEvent.click(increment);
+  expect(message).toHaveTextContent('Current count: 1');
+
+  fireEvent.click(decrement);
+  expect(message).toHaveTextContent('Current count: 0');
+});
+```
+
+### Using @testing-library/user-event
+Clicking buttons is also a bit of an implementation detail. We're firing a single event, when we actually should be firing several other events like the user does. When a user clicks a button, they first have to
+move their mouse over the button which will fire some mouse events. They'll also mouse down and mouse up on the input and focus it! Lots of events!
+
+If we want to be truly implementation detail free, then we should probably fire all those same events too. Luckily for us, Testing Library has us covered with `@testing-library/user-event`. This may one-day be baked directly into `@testing-library/dom`, but for now it's in a separate package.
+
+When the user clicks on things, they are firing all kinds of events like pointer events, mouse events. If they're using keyboard, then they're going to be doing key events. It would be great if instead of just firing the click event, we've fired all of those events to ensure that our test is resembling the way that our software is going to be used in production as closely as possible.
+
+The only difference between fireEvent and userEvent is that userEvent is going to fire a bunch of different events that are associated with this typical user interaction of a click. UserEvent does fire a mouseDown and a mouseUp, as well as several other events that are typically fired when a user clicks on a particular area of the UI.
+
+UserEvent is built on top of testing-library's fireEvent to fire all of those events. UserEvent has a bunch of methods on it that you can use to trigger typical interactions that your users will perform with your application. In general, you want to defer to userEvent if you can, before you reach for fireEvent. That way you can keep your test free of implementation details.
+
+```typescript
+import {render, screen} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import Counter from '../../components/counter';
+
+test('counter increments and decrements when the buttons are clicked', () => {
+  render(<Counter />);
+  const decrement = screen.getByRole('button', {name: /decrement/i});
+  const increment = screen.getByRole('button', {name: /increment/i});
+  const message = screen.getByText(/current count/i);
+
+  // Notice that React Testing Library queries do null-checks for you automatically, so you can ditch all this null-checking stuff.
+  expect(message).toHaveTextContent('Current count: 0');
+
+  // The only difference between fireEvent and userEvent is that userEvent is going to fire a bunch of different events that are associated
+  // with this typical user interaction of a click. UserEvent does fire a mouseDown and a mouseUp, as well as several other events that are
+  // typically fired when a user clicks on a particular area of the UI.
+  userEvent.click(increment);
+  expect(message).toHaveTextContent('Current count: 1');
+
+  userEvent.click(decrement);
+  expect(message).toHaveTextContent('Current count: 0');
+});
+```
+
+Once you're done, look around in the code of `@testing-library/user-event`'s [`click` method](https://github.com/testing-library/user-event/blob/673c2257ef63f69dd46b9fe2d4bbc3146db1426b/src/click.ts#L116-L139).
+It's pretty interesting! You'll notice that it's using `fireEvent` under the hood. For example, a single click on a button will fire these events (in this order):
+
+- `pointerover`
+- `pointerenter`
+- `mouseover`
+- `mouseenter`
+- `pointermove`
+- `mousemove`
+- `pointerdown`
+- `mousedown`
+- `focus`
+- `focusin`
+- `pointerup`
+- `mouseup`
+- `click`
+
+### Form Testing
+The users spend a lot of time interacting with forms and many of them are among the most important parts of our application (like the "checkout" form of an e-commerce app or the "login" form of most apps). Because of this, it's pretty critical to have confidence that those continue to work over time.
+
+You need to ensure that the user can find inputs in the form, fill in their information, and validate that when they submit the form the submitted data is correct.
+
+```typescript
+import {render, screen} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import Login from './components/login';
+
+test('submitting the form calls onSubmit with username and password', () => {
+  let submittedData: unknown;
+  const handleSubmit = (data: unknown) => (submittedData = data);
+  render(<Login onSubmit={handleSubmit} />);
+  const username = 'chucknorris';
+  const password = 'i need no password';
+
+  userEvent.type(screen.getByLabelText(/username/i), username);
+  userEvent.type(screen.getByLabelText(/password/i), password);
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  expect(submittedData).toEqual({username, password});
+});
+```
+
+#### *Using a jest mock function*
+Jest has built-in "mock" function APIs. Rather than creating the `submittedData` variable, try to use a mock function and assert it was called correctly:
+
+```typescript
+test('submitting the form calls onSubmit with username and password', () => {
+  // Jest mock function that will keep track of those things for us
+  const handleSubmit = jest.fn();
+  render(<Login onSubmit={handleSubmit} />);
+  const username = 'chucknorris';
+  const password = 'i need no password';
+
+  userEvent.type(screen.getByLabelText(/username/i), username);
+  userEvent.type(screen.getByLabelText(/password/i), password);
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  expect(handleSubmit).toHaveBeenCalledWith({username, password});
+  expect(handleSubmit).toHaveBeenCalledTimes(1);
+});
+```
+
+#### *Generate test data*
+An important thing to keep in mind when testing is simplifying the maintenance of the tests by reducing the amount of unrelated cruft in the test. You want to make it so the code for the test communicates what's important and what is not important.
+
+Specifically, if we have these values:
+
+```javascript
+const username = 'chucknorris'
+const password = 'i need no password'
+```
+
+Does the code behave differently when the username is `chucknorris`? Do we have special logic around that? Without looking at the implementation I cannot be completely sure. What would be better is if the code communicated that the actual value is irrelevant. But how do you communicate that? A code comment? Let's generate the value!
+
+There's a package we can use for this called [faker](https://www.npmjs.com/package/faker). You can get a random username and password from `faker.internet.userName()` and `faker.internet.password()`. Import that and generate the username and password.
+
+```typescript
+import type {LoginFormValues} from '../../components/login';
+
+function buildLoginForm(overrides?: Partial<LoginFormValues>) {
+  return {
+    username: internet.userName(),
+    password: internet.password(),
+    overrides,
+  };
+}
+
+test('submitting the form calls onSubmit with username and password', () => {
+  const handleSubmit = jest.fn();
+  render(<Login onSubmit={handleSubmit} />);
+  // We might not want a randomly generated password and we'd instead want a specific password.
+  const {username, password} = buildLoginForm({password: 'Qwerty123*'});
+
+  userEvent.type(screen.getByLabelText(/username/i), username);
+  userEvent.type(screen.getByLabelText(/password/i), password);
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  expect(handleSubmit).toHaveBeenCalledWith({username, password});
+  expect(handleSubmit).toHaveBeenCalledTimes(1);
+});
+```
+
+#### *Using Test Data Bot*
+There's a library for generating test data: [`@jackfranklin/test-data-bot`](https://www.npmjs.com/package/@jackfranklin/test-data-bot). It provides a few nice utilities (including the ability to provide overrides like our own function does).
+
+```typescript
+import {build, fake, sequence} from '@jackfranklin/test-data-bot';
+
+const loginFormBuilder = build<LoginFormValues>({
+  fields: {
+    username: fake(f => f.internet.userName()),
+    password: fake(f => f.internet.password()),
+    // email: sequence(x => `jack${x}@email.com`),
+  },
+});
+
+test('submitting the form calls onSubmit with username and password', () => {
+  const handleSubmit = jest.fn();
+  render(<Login onSubmit={handleSubmit} />);
+  const {username, password} = loginFormBuilder();
+
+  userEvent.type(screen.getByLabelText(/username/i), username);
+  userEvent.type(screen.getByLabelText(/password/i), password);
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  expect(handleSubmit).toHaveBeenCalledWith({username, password});
+  expect(handleSubmit).toHaveBeenCalledTimes(1);
+});
+```
+
 
 ## Add-Ons
 
