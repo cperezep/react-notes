@@ -2141,6 +2141,303 @@ test('submitting the form calls onSubmit with username and password', () => {
 });
 ```
 
+### Mocking HTTP Requests
+Testing the frontend code interacts with the backend is important. It's how the user uses our applications, so it's what our tests should do as well if we want the maximum confidence. However, there are several challenges that come with doing that. The setup required to make this work is non-trivial. It is definitely important that we test that integration, but we can do that with a suite of solid E2E tests using a tool like [Cypress](https://cypress.io).
+
+For our Integration and Unit component tests, we're going to trade-off some confidence for convenience and we'll make up for that with E2E tests. So for all of our Jest tests, we'll start up a mock server to handle all of the `window.fetch` requests we make during our tests.
+
+> Because window.fetch isn't supported in JSDOM/Node, we have the `whatwg-fetch`
+> module installed which will polyfill fetch in our testing environment which
+> will allow MSW to handle those requests for us. This is setup automatically in
+> our jest config thanks to `react-scripts`.
+
+To handle these fetch requests, we're going to start up a "server" which is not actually a server, but simply a request interceptor. This makes it really easy to get things setup (because we don't have to worry about finding an available port for the server to listen to and making sure we're making requests to the right port) and it also allows us to mock requests made to other domains.
+
+We'll be using a tool called [MSW](https://mswjs.io/) for this. Here's an example of how you can use msw for tests:
+
+```typescript
+// __tests__/fetch.test.tsx
+import {rest} from 'msw'
+import {setupServer} from 'msw/node'
+import {render, waitForElementToBeRemoved, screen} from '@testing-library/react'
+import {userEvent} from '@testing-library/user-event'
+import Fetch from '../fetch'
+
+const server = setupServer(
+  rest.get('/greeting', (req, res, ctx) => {
+    return res(ctx.json({greeting: 'hello there'}))
+  }),
+  // Other handler
+  rest.post<Record<string, string>, LoginResponse>(
+    '/login',
+    async (req, res, ctx) => {
+      // That way, we feel a little bit more confident because the mock resembles the real world more closely.
+      // This allows us to add some additional tests later to verify what the UI does when we get a 400 response because we didn't submit a password.
+      if (!req.body.password) {
+        return res(ctx.status(400), ctx.json({message: 'password required'}));
+      }
+      if (!req.body.username) {
+        return res(ctx.status(400), ctx.json({message: 'username required'}));
+      }
+      return res(ctx.json({username: req.body.username}));
+    },
+  )
+)
+
+beforeAll(() => server.listen())
+afterEach(() => server.resetHandlers())
+afterAll(() => server.close())
+
+test('loads and displays greeting', async () => {
+  render(<Fetch url="/greeting" />)
+
+  userEvent.click(screen.getByText('Load Greeting'))
+
+  await waitForElementToBeRemoved(() => screen.getByText('Loading...'))
+
+  expect(screen.getByRole('heading')).toHaveTextContent('hello there')
+  expect(screen.getByRole('button')).toHaveAttribute('disabled')
+})
+
+test('handles server error', async () => {
+  server.use(
+    rest.get('/greeting', (req, res, ctx) => {
+      return res(ctx.status(500))
+    }),
+  )
+
+  render(<Fetch url="/greeting" />)
+
+  userEvent.click(screen.getByText('Load Greeting'))
+
+  await waitForElementToBeRemoved(() => screen.getByText('Loading...'))
+
+  expect(screen.getByRole('alert')).toHaveTextContent('Oops, failed to fetch!')
+  expect(screen.getByRole('button')).not.toHaveAttribute('disabled')
+})
+```
+
+That should give you enough to go on, but if you'd like to check out the docs.
+[MSW](https://mswjs.io/)
+
+#### Server Request Handlers
+One of the cool things about MSW is that it works not only in the test environment in Node as well as in our development environment in the browser. It's often more reliable, works offline, doesn't require a lot of environment setup,
+and allows us to start writing UI for APIs that aren't finished yet. It means that as awesome because it's able to share those server handlers for our development environment in the browser. All we had to do that is put our server handlers in a shared file, which we import in both our development environment, as well as our test environment, and we can have this nice shared experience between the both of them.
+
+**Example**
+```typescript
+// src/test/server-handlers.ts
+import {rest} from 'msw'
+
+const delay = process.env.NODE_ENV === 'test' ? 0 : 1500
+
+type LoginResponse = {username: string} | {message: string}
+
+const handlers = [
+  // <RequestBodyType, ResponseBodyType, RequestParamsType>
+  rest.post<Record<string, string>, LoginResponse>(
+    'https://auth-provider.example.com/api/login',
+    async (req, res, ctx) => {
+      if (!req.body.password) {
+        return res(
+          ctx.delay(delay),
+          ctx.status(400),
+          ctx.json({message: 'password required'}),
+        )
+      }
+      if (!req.body.username) {
+        return res(
+          ctx.delay(delay),
+          ctx.status(400),
+          ctx.json({message: 'username required'}),
+        )
+      }
+      return res(ctx.delay(delay), ctx.json({username: req.body.username}))
+    },
+  ),
+]
+
+export {handlers}
+```
+Development Environment in Node
+
+```typescript
+// src/test/server.ts
+import {setupWorker} from 'msw'
+import {handlers} from './server-handlers'
+import {homepage} from '../../package.json'
+
+setupWorker(...handlers)
+
+const fullUrl = new URL(homepage)
+
+const server = setupWorker(...handlers)
+
+server.start({
+  quiet: true,
+  serviceWorker: {
+    url: fullUrl.pathname + 'mockServiceWorker.js',
+  },
+})
+```
+
+Test Environment in the browser
+
+```typescript
+import {render, screen, waitForElementToBeRemoved} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import {build, fake} from '@jackfranklin/test-data-bot';
+import {setupServer} from 'msw/node';
+import {handlers} from 'test/server-handlers';
+import Login from '../../components/login-submission';
+import {LoginFormValues} from '../../components/login';
+
+const buildLoginForm = build<LoginFormValues>({
+  fields: {
+    username: fake(f => f.internet.userName()),
+    password: fake(f => f.internet.password()),
+  },
+});
+
+const server = setupServer(...handlers);
+
+beforeAll(() => server.listen());
+afterAll(() => server.close());
+
+test(`logging in displays the user's username`, async () => {
+  render(<Login />);
+  const {username, password} = buildLoginForm();
+
+  userEvent.type(screen.getByLabelText(/username/i), username);
+  userEvent.type(screen.getByLabelText(/password/i), password);
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  // screen.debug();
+
+  // as soon as the user hits submit, we render a spinner to the screen. That
+  // spinner has an aria-label of "loading" for accessibility purposes, so
+  // wait for the loading spinner to be removed using waitForElementToBeRemoved
+  await waitForElementToBeRemoved(() => screen.getByLabelText(/loading/i));
+  // https://testing-library.com/docs/dom-testing-library/api-async#waitforelementtoberemoved
+
+  // screen.debug();
+
+  // once the login is successful, then the loading spinner disappears and
+  // we render the username.
+  // assert that the username is on the screen
+  expect(screen.getByText(username)).toBeInTheDocument();
+});
+
+test(`omitting the password results in an error`, async () => {
+  render(<Login />);
+  const {username} = buildLoginForm();
+
+  userEvent.type(screen.getByLabelText(/username/i), username);
+  // not going to fill in the password
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  await waitForElementToBeRemoved(() => screen.getByLabelText(/loading/i));
+
+  // screen.debug();
+
+  expect(screen.getByRole('alert')).toHaveTextContent('password required');
+});
+```
+
+#### Inline Snapshots for error messages
+Snapshot tests are a very useful tool whenever you want to make sure your UI does not change unexpectedly.
+
+A typical snapshot test case renders a UI component, takes a snapshot, then compares it to a reference snapshot file stored alongside the test. The test will fail if the two snapshots do not match: either the change is unexpected, or the reference snapshot needs to be updated to the new version of the UI component.
+
+Inline snapshots behave identically to external snapshots (.snap files), except the snapshot values are written automatically back into the source code. This means you can get the benefits of automatically generated snapshots without having to switch to an external file to make sure the correct value was written.
+
+It's not good practice hard coding error messages because if the error message wherever to change.
+
+Instead, we can use a special assertion to take a "snapshot" of the error message and Jest will update our code for us. Use `toMatchInlineSnapshot` rather than an explicit assertion on that error element.
+
+Example:
+
+First, you write a test, calling .toMatchInlineSnapshot() with no arguments:
+
+```typescript
+test(`omitting the password results in an error`, async () => {
+  render(<Login />);
+  const {username} = buildLoginForm();
+
+  userEvent.type(screen.getByLabelText(/username/i), username);
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  await waitForElementToBeRemoved(() => screen.getByLabelText(/loading/i));
+
+  expect(screen.getByRole('alert').textContent).toMatchInlineSnapshot();
+});
+```
+
+The next time you run Jest, the *alert* will be evaluated, and a snapshot will be written as an argument to toMatchInlineSnapshot:
+
+```typescript
+test(`omitting the password results in an error`, async () => {
+  render(<Login />);
+  const {username} = buildLoginForm();
+
+  userEvent.type(screen.getByLabelText(/username/i), username);
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  await waitForElementToBeRemoved(() => screen.getByLabelText(/loading/i));
+
+  // This is one feature that I use for error messages all the time. I think it's super helpful as an assertion for this kind of scenario
+  expect(screen.getByRole('alert').textContent).toMatchInlineSnapshot(
+    `"password required"`,
+  );
+});
+```
+
+That's all there is to it! You can even update the snapshots with --updateSnapshot or using the u key in --watch mode.
+
+[Snapshot Testing](https://jestjs.io/docs/en/snapshot-testing)
+
+#### One-off Server Handlers
+How would we test a situation where the server fails for some unknown reason? There are plenty of situations where we want to test what happens when the _server_ misbehaves. But we don't want to code those scenarios in our application-wide server handlers for two reasons:
+
+1. It clutters our application-wide handlers. Lots of the same problems of CSS applies here: people are afraid to modify or delete any code because they're uncertain what other code will break as a result.
+2. The indirection makes the tests harder to understand.
+
+[Read more about the benefits of colocation](https://kentcdodds.com/blog/colocation).
+
+So instead, we want one-off server handlers to be written directly in the test that needs it. This is what MSW's `server.use` API is for. It allows you to add server handlers after the server has already started. And the `server.resetHandlers()` allows you to remove those added handlers between tests to preserve test isolation and restore the original handlers.
+
+```typescript
+...
+
+// We'll say after each one of these, we're going to clean up all of the runtime handlers. Just remove them all and go back to what we had when we first set up this server.
+afterEach(() => server.resetHandlers());
+
+test(`unknown server error displays the error message`, async () => {
+  const testErrorMessage = 'Something is wrong';
+  // Keep in mind here is we've added a server handler for this request, effectively overriding the existing request.
+  // Things are working OK right here because this is the last test in our file, but if I move this up to the very
+  // top and make it the first test in our file, then sure this test will pass just fine, but my other tests are totally going to fail.
+
+  // The reason that they fail is because every time we make this POST request, we're going to respond with a 500. We need to clear this out somehow.
+  // One way we can do that is say server reset handlers in afterEach test
+  server.use(
+    rest.post<Record<string, string>, LoginResponse>(
+      'https://auth-provider.example.com/api/login',
+      async (req, res, ctx) => {
+        return res(ctx.status(500), ctx.json({message: testErrorMessage}));
+      },
+    ),
+  );
+  render(<Login />);
+  userEvent.click(screen.getByRole('button', {name: /submit/i}));
+
+  await waitForElementToBeRemoved(() => screen.getByLabelText(/loading/i));
+
+  expect(screen.getByRole('alert')).toHaveTextContent(testErrorMessage);
+});
+
+...
+```
 
 ## Add-Ons
 
