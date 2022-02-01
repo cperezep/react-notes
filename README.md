@@ -2439,6 +2439,184 @@ test(`unknown server error displays the error message`, async () => {
 ...
 ```
 
+### Context and Custom Render Method
+
+A common question when testing React components is what to do with React components that use context values. If you take a step back and consider the guiding testing philosophy of writing tests that resemble the way our software is used, then you'll know that you want to render your component with the provider:
+
+```javascript
+render(
+  <ContextProvider>
+    <ComponentToTest />
+  </ContextProvider>,
+)
+```
+
+The one problem with this is if you want to re-render the `<ComponentToTest />` (for example, to give it new props and test how it responds to updated props), then you have to include the context providers:
+
+```javascript
+const {rerender} = render(
+  <ContextProvider>
+    <ComponentToTest />
+  </ContextProvider>,
+)
+
+rerender(
+  <ContextProvider>
+    <ComponentToTest newProp={true} />
+  </ContextProvider>,
+)
+```
+
+This is kind of annoying, so instead, you can provide a `wrapper` option and that will ensure that rerenders are wrapped as well:
+
+```typescript
+function Wrapper({children}: {children: React.ReactNode}) {
+  return <ContextProvider>{children}</ContextProvider>
+}
+
+const {rerender} = render(<ComponentToTest />, {wrapper: Wrapper})
+
+rerender(<ComponentToTest newProp={true} />)
+```
+
+#### Example
+
+```typescript
+import * as React from 'react';
+import {render, screen} from '@testing-library/react';
+import {ThemeProvider} from '../../components/theme';
+import EasyButton from '../../components/easy-button';
+
+test('renders with the light styles for the light theme', () => {
+  function Wrapper({children}: {children: React.ReactNode}) {
+    return <ThemeProvider initialTheme="light">{children}</ThemeProvider>;
+  }
+  render(<EasyButton>Easy</EasyButton>, {wrapper: Wrapper});
+  const button = screen.getByRole('button', {name: /easy/i});
+  expect(button).toHaveStyle(`
+     background-color: white;
+     color: black;
+   `);
+});
+
+test('renders with the dark styles for the dark theme', () => {
+  function Wrapper({children}: {children: React.ReactNode}) {
+    return <ThemeProvider initialTheme="dark">{children}</ThemeProvider>;
+  }
+  render(<EasyButton>Easy</EasyButton>, {wrapper: Wrapper});
+  const button = screen.getByRole('button', {name: /easy/i});
+  expect(button).toHaveStyle(`
+     background-color: black;
+     color: white;
+   `);
+});
+```
+
+[Wrapper API](https://testing-library.com/docs/react-testing-library/api#wrapper)
+
+This `Wrapper` could include providers for all your context providers in your app: Router, Theme, Authentication, etc.
+
+To take it further, you could create your own custom render method that does this automatically:
+
+```javascript
+import {render as rtlRender} from '@testing-library/react'
+// "rtl" is short for "react testing library" not "right-to-left"
+
+function render(ui, options) {
+  return rtlRender(ui, {wrapper: Wrapper, ...options})
+}
+
+// then in your tests, you don't need to worry about context at all:
+const {rerender} = render(<ComponentToTest />)
+
+rerender(<ComponentToTest newProp={true} />)
+```
+
+#### Example
+
+```typescript
+// Extending a type via intersections
+type renderWithProvidersProps = RenderOptions & {
+  theme?: string;
+};
+
+// ...options: This object not only supports the theme that I have for my particular use case
+// but also anything else that the render function from React Testing Library gives me.
+// Example: That would allow me to configure other things like if I wanted to test the hydration
+// functionality or whatever else I want to do.
+// renderWithTheme(<EasyButton>Easy</EasyButton>, {theme: 'light', hydrate: true });
+function renderWithTheme(ui: React.ReactElement, {theme, ...options}: renderWithProvidersProps = {}) {
+  function Wrapper({children}: {children: React.ReactNode}) {
+    // We need to check if theme is Theme type
+    if (theme !== 'light' && theme !== 'dark') {
+      throw new Error('Invalid theme');
+    }
+    return <ThemeProvider initialTheme={theme}>{children}</ThemeProvider>;
+  }
+
+  return render(ui, {wrapper: Wrapper, ...options});
+}
+
+test('renders with the light styles for the light theme', () => {
+  renderWithTheme(<EasyButton>Easy</EasyButton>, {theme: 'light'});
+  const button = screen.getByRole('button', {name: /easy/i});
+  expect(button).toHaveStyle(`
+     background-color: white;
+     color: black;
+   `);
+});
+
+test('renders with the dark styles for the dark theme', () => {
+  renderWithTheme(<EasyButton>Easy</EasyButton>, {theme: 'dark'});
+  const button = screen.getByRole('button', {name: /easy/i});
+  expect(button).toHaveStyle(`
+     background-color: black;
+     color: white;
+   `);
+});
+```
+
+From there, you can put that custom render function in your own module and use your custom render method instead of the built-in one from React Testing Library. Learn more about this from the docs:
+
+[Setup](https://testing-library.com/docs/react-testing-library/setup)
+
+#### Example
+
+```typescript
+// test/test-utils.tsx
+
+// Module that mports render from React Testing Library render.
+// It creates its own render function and then it re-exports everything from React Testing Library.
+// It can be your own version of React Testing Library.
+import {render as rtlRender, RenderOptions} from '@testing-library/react';
+import {ThemeProvider} from 'components/theme';
+
+// Extending a type via intersections
+type renderWithProvidersProps = RenderOptions & {
+  theme?: string;
+};
+
+function render(
+  ui: React.ReactElement,
+  {theme, ...options}: renderWithProvidersProps = {},
+) {
+  function Wrapper({children}: {children: React.ReactNode}) {
+    if (theme !== 'light' && theme !== 'dark') {
+      throw new Error('Invalid theme');
+    }
+    return <ThemeProvider initialTheme={theme}>{children}</ThemeProvider>;
+  }
+
+  return rtlRender(ui, {wrapper: Wrapper, ...options});
+}
+
+export * from '@testing-library/react';
+// override React Testing Library's render with our own
+// They should all be using this render method because those providers are an implementation detail of each one of your components.
+// They should just have all of the same providers that they're going to have when you ship the actual app.
+export {render};
+```
+
 ## Add-Ons
 
 * [Closure](https://whatthefork.is/closure)
