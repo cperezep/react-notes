@@ -2617,6 +2617,256 @@ export * from '@testing-library/react';
 export {render};
 ```
 
+### Testing Custom Hooks
+
+You're writing an awesome custom hook and you want to test it, but as soon as you call it you see
+the following error:
+
+> Invariant Violation: Hooks can only be called inside the body of a function component.
+
+You don't really want to write a component solely for testing this hook and have to work out how you
+were going to trigger all the various ways the hook can be updated, especially given the
+complexities of how you've wired the whole thing together.
+
+Step back and think about how the guiding testing principle applies to this situation: the more your tests resemble the way your software is used, the more confidence they can give you. How is your custom hook used? It's used in a component! So that's how it should be tested.
+
+Often, the easiest and most straightforward way to test a custom hook is to create a component that uses it and then test that component instead.
+
+### Example
+
+```typescript
+// use-counter.tsx
+import * as React from 'react'
+
+export type useCounterProps = {
+  initialCount?: number;
+  step?: number;
+};
+
+function useCounter({initialCount = 0, step = 1}: useCounterProps = {}) {
+  const [count, setCount] = React.useState(initialCount)
+  const increment = () => setCount(c => c + step)
+  const decrement = () => setCount(c => c - step)
+  return {count, increment, decrement}
+}
+
+export default useCounter
+```
+
+```typescript
+// use-counter.spec.tsx
+import {render, screen} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import useCounter from '../../components/use-counter';
+
+// Function component that resembles the type of component people are going to write when they're using our custom hook.
+function UseCounterHookExample() {
+  const {count, increment, decrement} = useCounter();
+
+  return (
+    <div>
+      <div>Current count: {count}</div>
+      <button onClick={decrement}>Decrement</button>
+      <button onClick={increment}>Increment</button>
+    </div>
+  );
+}
+
+test('exposes the count and increment/decrement functions', () => {
+  render(<UseCounterHookExample />);
+  const increment = screen.getByRole('button', {name: /increment/i});
+  const decrement = screen.getByRole('button', {name: /decrement/i});
+  const message = screen.getByText(/current count/i);
+
+  expect(message).toHaveTextContent('Current count: 0');
+  userEvent.click(increment);
+  userEvent.click(increment);
+  expect(message).toHaveTextContent('Current count: 2');
+  userEvent.click(decrement);
+  expect(message).toHaveTextContent('Current count: 1');
+});
+```
+
+Sometimes, you do have a pretty complicated custom hook. Making a custom component that uses that hook in the way it should be used is difficult. Especially when you want to cover some edge cases and things, it makes your test a little difficult to read.
+
+Instead of having a custom hook and a custom test function like the pevious, we will make a function test component.
+
+This can be useful if it's difficult to create a component that resembles the way that people typically use your hook, especially for covering different edge cases.
+
+```typescript
+import {render, act} from '@testing-library/react';
+import useCounter from '../../components/use-counter';
+
+// We don't need user events anymore because we're not interacting with the DOM.
+test('exposes the count and increment/decrement functions', () => {
+  let result: ReturnType<typeof useCounter>;
+  // We need to call hook inside func component because "Hooks can only be called inside of the body of a function component."
+  function TestComponent() {
+    result = useCounter();
+    return null;
+  }
+  render(<TestComponent />);
+  console.log(result); // { count: 0, increment: [Function], decrement: [Function] }
+  expect(result.count).toBe(0);
+  // Warning: An update to TestComponent inside a test was not wrapped in act(...).
+  // When testing, code that causes React state updates should be wrapped into act(...):
+  // result.increment();
+
+  act(() => result.increment());
+  expect(result.count).toBe(1);
+  act(() => result.decrement());
+  expect(result.count).toBe(0);
+});
+```
+
+> **act**: The act function basically just telling React:
+>
+>> _I'm going to do something that's going to trigger an update. After my callback is all finished, I want you to flush all the side effects, the React useEffect callbacks and everything so that my next line of code has a stable component to interact with so we don't end up with some sort of intermediary state where our effects haven't been run yet._
+
+This was not necessary before because we were using **_userEvent_**, which wraps everything in act calls. It is now necessary because we are calling that setCount directly through this increment function call. Because of that, we have to manually wrap this in act.
+
+This is one of the very few situations where you do have to use the **_act_** utility from ReactTestUtils.
+
+### Creating a Setup Function
+
+```typescript
+import {render, act} from '@testing-library/react';
+import useCounter, {useCounterProps} from '../../components/use-counter';
+
+function setup(initialProps: useCounterProps = {}) {
+  let result: ReturnType<typeof useCounter>;
+  function TestComponent(props: useCounterProps) {
+    result = useCounter(props);
+    return null;
+  }
+  render(<TestComponent {...initialProps} />);
+  return result;
+}
+
+test('exposes the count and increment/decrement functions', () => {
+  const result = setup();
+  expect(result.count).toBe(0);
+  act(() => result.increment());
+  expect(result.count).toBe(1);
+  act(() => result.decrement());
+  expect(result.count).toBe(0);
+});
+```
+
+We got an error, it just so happens due to referential equality, right here, we set the object to what we get back from useCounter, and then we return that object. When we call this increment, we trigger a re-render of this testComponent function. We reassign the result to a new object. Just because we're reassigning this variable doesn't mean that we're reassigning this variable.
+
+What we need to do is have some binding that's shared with a single object that is then continuously updated.
+
+```typescript
+import {render, act} from '@testing-library/react';
+import useCounter, {useCounterProps} from '../../components/use-counter';
+
+function setup(initialProps: useCounterProps = {}) {
+  let result: {current: ReturnType<typeof useCounter> | null} = {current: null};
+  function TestComponent(props: useCounterProps) {
+    result.current = useCounter(props);
+    return null;
+  }
+  render(<TestComponent {...initialProps} />);
+  return result;
+}
+
+test('exposes the count and increment/decrement functions', () => {
+  const result = setup();
+  expect(result.current.count).toBe(0);
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(1);
+  act(() => result.current.decrement());
+  expect(result.current.count).toBe(0);
+});
+
+test('allows customization of the initial count', () => {
+  const result = setup({initialCount: 2});
+  expect(result.current.count).toBe(2);
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(3);
+  act(() => result.current.decrement());
+  expect(result.current.count).toBe(2);
+});
+
+test('allows customization of the initial step', () => {
+  const result = setup({step: 3});
+  expect(result.current.count).toBe(0);
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(3);
+  act(() => result.current.decrement());
+  expect(result.current.count).toBe(0);
+});
+```
+
+Let's go to say result.current equals this useCounter. We're no longer reassigning that variable. We return that result. Instead of result.count, and so on, we'll say result.current. Now, we have a reference to the exact same object, which gets reassigned to whatever use counter returns.
+
+### Using `react-hooks-testing-library`
+
+The `react-hooks-testing-library` allows you to create a simple test harness for React hooks that
+handles running them within the body of a function component, as well as providing various useful
+utility functions for updating the inputs and retrieving the outputs of your amazing custom hook.
+This library aims to provide a testing experience as close as possible to natively using your hook
+from within a real component.
+
+Using this library, you do not have to concern yourself with how to construct, render or interact
+with the react component in order to test your hook. You can just use the hook directly and assert
+the results.
+
+### When to use this library
+
+1. You're writing a library with one or more custom hooks that are not directly tied to a component
+2. You have a complex hook that is difficult to test through component interactions
+
+### When not to use this library
+
+1. Your hook is defined alongside a component and is only used there
+2. Your hook is easy to test by just testing the components using it
+
+```typescript
+import {renderHook, act} from '@testing-library/react-hooks';
+import useCounter from '../../components/use-counter';
+
+test('exposes the count and increment/decrement functions', () => {
+  const {result} = renderHook(() => useCounter());
+  expect(result.current.count).toBe(0);
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(1);
+  act(() => result.current.decrement());
+  expect(result.current.count).toBe(0);
+});
+
+test('allows customization of the initial count', () => {
+  const {result} = renderHook(() => useCounter({initialCount: 2}));
+  expect(result.current.count).toBe(2);
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(3);
+  act(() => result.current.decrement());
+  expect(result.current.count).toBe(2);
+});
+
+test('allows customization of the initial step', () => {
+  const {result} = renderHook(() => useCounter({step: 3}));
+  expect(result.current.count).toBe(0);
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(3);
+  act(() => result.current.decrement());
+  expect(result.current.count).toBe(0);
+});
+
+test('the step can be changed', () => {
+  const {result, rerender} = renderHook(useCounter, {
+    initialProps: {step: 3},
+  });
+  expect(result.current.count).toBe(0);
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(3);
+  rerender({step: 2});
+  act(() => result.current.decrement());
+  expect(result.current.count).toBe(1);
+});
+```
+
 ## Add-Ons
 
 * [Closure](https://whatthefork.is/closure)
